@@ -1,0 +1,29 @@
+body {
+    background: #000000;
+    color: #FFFFFF;
+    font-weight: bold;
+    user-select: none;
+}
+
+div {
+    display: inline-block;
+    position: absolute;
+}
+
+img {
+    -webkit-user-drag: none;
+    display: inline-block;
+    position: absolute;
+}
+
+canvas {
+    display: inline-block;
+    position: absolute;
+    image-rendering: pixelated;
+    pointer-events: none;
+}
+
+.pixelated {
+    width: 900px;
+    height: 900px;
+}
