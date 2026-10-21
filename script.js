@@ -219,3 +219,255 @@ function lutColor(lut, h) {
 function lutIndex(h) {
     return Math.round(clamp(h, 0, 100) / 100 * (LUT_STEPS - 1)) * 3;
 }
+
+const W = 300, H = 300;
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const imgData = ctx.createImageData(W, H);
+let pixels = imgData.data;
+
+function setPixel(x, y, ctxData, r, g, bch, a = 255) {
+    const idx = (y * W + x) * 4;
+    ctxData[idx] = r;
+    ctxData[idx + 1] = g;
+    ctxData[idx + 2] = bch;
+    ctxData[idx + 3] = a;
+    return ctxData;
+}
+
+function setPixelLUT(x, y, ctxData, lut, li, a = 255, draw = true) {
+    const idx = (y * W + x) * 4;
+    if (draw) {
+        ctxData[idx] = lut[li];
+        ctxData[idx + 1] = lut[li + 1];
+        ctxData[idx + 2] = lut[li + 2];
+        ctxData[idx + 3] = a;
+    }
+    return ctxData;
+}
+
+function b(x0, y0, x1, y1) {
+    x0 = Math.round(x0);
+    y0 = Math.round(y0);
+    x1 = Math.round(x1);
+    y1 = Math.round(y1);
+
+    const dx = Math.abs(x1 - x0);
+    const dy = Math.abs(y1 - y0);
+
+    const sx = (x0 < x1) ? 1 : -1;
+    const sy = (y0 < y1) ? 1 : -1;
+
+    let err = dx - dy;
+    let result = [];
+    while (true) {
+        result.push([x0, y0])
+
+        if (x0 === x1 && y0 === y1) break;
+
+        const e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx) { err += dx; y0 += sy; }
+    }
+    return result;
+}
+
+const CELL = { cx: 150, cy: 150, a: 100, b: 90 };
+const RV = 18;
+const K = 10;
+const H_OUT = -(RV + K);
+
+function smax(p, q, k) {
+    const h = Math.max(k - Math.abs(p - q), 0) / k;
+    return Math.max(p, q) + h * h * k * 0.25;
+}
+
+function ellipseSD(px, py, a, b) {
+    const k0 = Math.hypot(px / a, py / b);
+    const k1 = Math.hypot(px / (a * a), py / (b * b));
+    return k1 < 1e-9 ? -Math.min(a, b) : k0 * (k0 - 1) / k1;
+}
+
+function rim(theta) {
+    const c = Math.cos(theta), s = Math.sin(theta), a = CELL.a, b = CELL.b;
+    const rr = a * b / Math.hypot(b * c, a * s);
+    const px = rr * c, py = rr * s;
+    const nx = -px / (a * a), ny = -py / (b * b);
+    const len = Math.hypot(nx, ny);
+    return { x: CELL.cx + px, y: CELL.cy + py, nx: nx / len, ny: ny / len };
+}
+
+function field(x, y, ves) {
+    const fCell = ellipseSD(x - CELL.cx, y - CELL.cy, CELL.a, CELL.b);
+    let dV = 1e9;
+    for (const v of ves) dV = Math.min(dV, distXY(x, y, v.cx, v.cy) - v.r);
+    return smax(fCell, -dV, K);
+}
+
+function eventH(e, time) {
+    const t = clamp((time - e.t0) / e.dur, 0, 1);
+    const s = smoothstep(0, 1, t) * 100;
+    if (e.type === '') return e.H_FAR;
+    return e.type === 'endo' ? pct(H_OUT, e.H_FAR, s) : pct(e.H_FAR, H_OUT, s);
+}
+
+function buildVes(events, time) {
+    return events.map(e => {
+        const h = eventH(e, time);
+        const m = rim(e.theta);
+        return { cx: m.x + m.nx * h, cy: m.y + m.ny * h, r: e.r ?? RV };
+    });
+}
+
+function traceContours(ves) {
+    const M = Math.max(CELL.a, CELL.b);
+    const lox = CELL.cx - M - 4, loy = CELL.cy - M - 4;
+    const n = 2 * M + 8, S = n + 1;
+    const g = new Float32Array(S * S);
+    for (let j = 0; j < S; j++)
+        for (let i = 0; i < S; i++) g[j * S + i] = field(lox + i, loy + j, ves);
+
+    const eH = (i, j) => (j * S + i) * 2;
+    const eV = (i, j) => (j * S + i) * 2 + 1;
+    const adj = new Map();
+    const link = (p, q) => {
+        if (!adj.has(p)) adj.set(p, []);
+        if (!adj.has(q)) adj.set(q, []);
+        adj.get(p).push(q); adj.get(q).push(p);
+    };
+
+    for (let j = 0; j < n; j++) {
+        for (let i = 0; i < n; i++) {
+            const a = g[j * S + i], bb = g[j * S + i + 1];
+            const c = g[(j + 1) * S + i + 1], d = g[(j + 1) * S + i];
+            const idx = (a < 0 ? 1 : 0) | (bb < 0 ? 2 : 0) | (c < 0 ? 4 : 0) | (d < 0 ? 8 : 0);
+            if (idx === 0 || idx === 15) continue;
+            const T = eH(i, j), B = eH(i, j + 1), L = eV(i, j), R = eV(i + 1, j);
+            switch (idx) {
+                case 1: case 14: link(L, T); break;
+                case 2: case 13: link(T, R); break;
+                case 3: case 12: link(L, R); break;
+                case 4: case 11: link(R, B); break;
+                case 6: case 9: link(T, B); break;
+                case 7: case 8: link(L, B); break;
+                case 5: case 10: {
+                    const inside = (a + bb + c + d) / 4 < 0;
+                    if ((idx === 5) === inside) { link(T, R); link(L, B); }
+                    else { link(L, T); link(R, B); }
+                }
+            }
+        }
+    }
+
+    const pos = key => {
+        const id = key >> 1, i = id % S, j = (id / S) | 0;
+        if ((key & 1) === 0) {
+            const f0 = g[j * S + i], f1 = g[j * S + i + 1];
+            return [lox + i + f0 / (f0 - f1), loy + j];
+        }
+        const f0 = g[j * S + i], f1 = g[(j + 1) * S + i];
+        return [lox + i, loy + j + f0 / (f0 - f1)];
+    };
+
+    const seen = new Set(), loops = [];
+    for (const start of adj.keys()) {
+        if (seen.has(start)) continue;
+        const loop = [];
+        let prev = -1, cur = start;
+        while (!seen.has(cur)) {
+            seen.add(cur);
+            loop.push(pos(cur));
+            const nb = adj.get(cur);
+            const nx = nb[0] === prev ? nb[1] : nb[0];
+            prev = cur; cur = nx;
+        }
+        if (loop.length > 3) loops.push(loop);
+    }
+    return loops;
+}
+
+function normalAngle(x, y, ves) {
+    const e = 0.5;
+    const gx = field(x + e, y, ves) - field(x - e, y, ves);
+    const gy = field(x, y + e, ves) - field(x, y - e, ves);
+    return Math.atan2(gy, gx);
+}
+
+function resample(loop, spacing) {
+    const m = loop.length, cum = [0];
+    for (let i = 0; i < m; i++) cum.push(cum[i] + dist(loop[i], loop[(i + 1) % m]));
+    const total = cum[m];
+    const cnt = Math.max(3, Math.round(total / spacing));
+    const out = [];
+    let seg = 0;
+    for (let k = 0; k < cnt; k++) {
+        const s = k * total / cnt;
+        while (cum[seg + 1] < s) seg++;
+        const u = (s - cum[seg]) / (cum[seg + 1] - cum[seg] || 1);
+        const p0 = loop[seg], p1 = loop[(seg + 1) % m];
+        out.push([p0[0] + (p1[0] - p0[0]) * u, p0[1] + (p1[1] - p0[1]) * u]);
+    }
+    return out;
+}
+
+function buildMembrane(ves, spacing = 4) {
+    return traceContours(ves)
+        .map(l => resample(l, spacing).map(p => [p[0], p[1], normalAngle(p[0], p[1], ves)]))
+        .sort((p, q) => q.length - p.length);
+}
+
+const events = [];
+
+function startEvent(type, angleDeg, dur, r, H_FAR) {
+    const e = { type, theta: rad(angleDeg), t0: performance.now(), dur, r, H_FAR };
+    events.push(e);
+    return e;
+}
+
+function endocytosis(angleDeg, dur = 3500, r = RV, H_FAR = 72) { return startEvent('endo', angleDeg, dur, r, H_FAR); }
+function exocytosis(angleDeg, dur = 3500, r = RV, H_FAR = 72) { return startEvent('exo', angleDeg, dur, r, H_FAR); }
+function clearVesicles() { events.length = 0; }
+
+function pruneEvents(now) {
+    for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i];
+        if (e.type === 'exo' && now >= e.t0 + e.dur) events.splice(i, 1);
+    }
+}
+
+const LINE_COLOR = hex2rgb('#70768b');
+
+function drawCurve(loops) {
+    for (const loop of loops) {
+        for (let i = 0; i < loop.length; i++) {
+            const p0 = loop[i], p1 = loop[(i + 1) % loop.length];
+            for (const [x, y] of b(p0[0], p0[1], p1[0], p1[1])) {
+                if (x < 0 || x >= W || y < 0 || y >= H) continue;
+                setPixel(x, y, pixels, LINE_COLOR[0], LINE_COLOR[1], LINE_COLOR[2]);
+            }
+        }
+    }
+}
+
+function renderFrame(now) {
+    pixels.fill(0);
+    pruneEvents(now);
+    drawCurve(buildMembrane(buildVes(events, now), 2));
+    ctx.putImageData(imgData, 0, 0);
+    requestAnimationFrame(renderFrame);
+}
+requestAnimationFrame(renderFrame);
+
+for (let i = 25; i < 45; i += 8) {
+    for (let j = -Math.floor(i * 0.75); j <= Math.floor(i * 0.75); j++) {
+        startEvent('', j + i / 3 + 110, 0, 2 + (j % Math.floor(i * 0.75) == 0 && j != 0) * 2, i);
+    }
+}
+
+for (let i = 60; i <= 72; i += 3) {
+    for (let j = -i; j <= i; j++) {
+        if ([63, 69].includes(i) && (j * j) % ((i - 60) * 13) != 0) continue;
+        startEvent('', j + i - 30, 0, 2 + (j % i == 0 && j != 0) * 2, i);
+    }
+}
+startEvent('', 20, 0, 25, 99.5);

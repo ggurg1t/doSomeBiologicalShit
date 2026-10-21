@@ -20,7 +20,7 @@ canvas {
     display: inline-block;
     position: absolute;
     image-rendering: pixelated;
-    pointer-events: none;
+    /* pointer-events: none; */
 }
 
 .pixelated {
