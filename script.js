@@ -1,5 +1,5 @@
 function rand(min, max) {
-    return Math.floor(Math.random() * (max - min + 1)) + min;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
 function rad(d) {
@@ -308,6 +308,9 @@ function eventH(e, time) {
     const t = clamp((time - e.t0) / e.dur, 0, 1);
     const s = smoothstep(0, 1, t) * 100;
     if (e.type === '') return e.H_FAR;
+    if (e.type === 'exo') {
+      return pct(e.H_FAR, H_OUT, clamp((s - 50) * 2, 0, 100));
+    }
     return e.type === 'endo' ? pct(H_OUT, e.H_FAR, s) : pct(e.H_FAR, H_OUT, s);
 }
 
@@ -315,17 +318,66 @@ function buildVes(events, time) {
     return events.map(e => {
         const h = eventH(e, time);
         const m = rim(e.theta);
-        return { cx: m.x + m.nx * h, cy: m.y + m.ny * h, r: e.r ?? RV };
+        return { cx: m.x + m.nx * h, cy: m.y + m.ny * h, r: e.r ?? RV, fixed: e.type === '' };   // fixed: 움직이지 않는 정적 원(캐시 대상)
     });
+}
+
+// ───────────────────────── 격자 계산 가속 ─────────────────────────
+// 원본은 격자 점(약 43,000개)마다 모든 원(수백 개)과의 거리를 구했다.
+// 여기서는 (1) 원마다 영향 범위 안의 격자 점에서만 거리를 갱신하고,
+// (2) 움직이지 않는 정적 원과 세포 타원 거리는 캐시해서 매 프레임에는 움직이는 소포만 계산한다.
+// 영향 범위 밖(거리 ≥ CUTOFF)은 CUTOFF로 두는데, 이때 smax(fCell, -CUTOFF, K)는
+// fCell ≥ -K 구간(= 곡선이 지나는 곳)에서 원래 값과 같고, 그 밖은 둘 다 음수라 곡선 위치가 변하지 않는다.
+const CUTOFF = 2 * K;
+let fcCache = null, stCache = null;
+
+function splatCircles(dV, list, lox, loy, S) {
+    for (const v of list) {
+        const reach = v.r + CUTOFF;
+        const i0 = Math.max(0, Math.floor(v.cx - reach - lox)), i1 = Math.min(S - 1, Math.ceil(v.cx + reach - lox));
+        const j0 = Math.max(0, Math.floor(v.cy - reach - loy)), j1 = Math.min(S - 1, Math.ceil(v.cy + reach - loy));
+        for (let j = j0; j <= j1; j++) {
+            const row = j * S, y = loy + j;
+            for (let i = i0; i <= i1; i++) {
+                const d = distXY(lox + i, y, v.cx, v.cy) - v.r;
+                if (d < dV[row + i]) dV[row + i] = d;
+            }
+        }
+    }
+}
+
+function fieldGrid(ves, lox, loy, S) {
+    const fkey = [CELL.cx, CELL.cy, CELL.a, CELL.b, lox, loy, S].join(',');
+    if (!fcCache || fcCache.key !== fkey) {
+        const arr = new Float32Array(S * S);
+        for (let j = 0; j < S; j++)
+            for (let i = 0; i < S; i++) arr[j * S + i] = ellipseSD(lox + i - CELL.cx, loy + j - CELL.cy, CELL.a, CELL.b);
+        fcCache = { key: fkey, arr };
+    }
+    const fixed = [], moving = [];
+    let h = 0;
+    for (const v of ves) {
+        if (v.fixed) { fixed.push(v); h = (h * 131 + Math.round(v.cx * 1000) * 7 + Math.round(v.cy * 1000) * 13 + Math.round(v.r * 1000)) % 2147483647; }
+        else moving.push(v);
+    }
+    const skey = fkey + '|' + fixed.length + ':' + h;
+    if (!stCache || stCache.key !== skey) {
+        const arr = new Float32Array(S * S).fill(CUTOFF);
+        splatCircles(arr, fixed, lox, loy, S);
+        stCache = { key: skey, arr };
+    }
+    const dV = Float32Array.from(stCache.arr);
+    splatCircles(dV, moving, lox, loy, S);
+    const fc = fcCache.arr, g = new Float32Array(S * S);
+    for (let k = 0; k < g.length; k++) g[k] = smax(fc[k], -dV[k], K);
+    return g;
 }
 
 function traceContours(ves) {
     const M = Math.max(CELL.a, CELL.b);
     const lox = CELL.cx - M - 4, loy = CELL.cy - M - 4;
     const n = 2 * M + 8, S = n + 1;
-    const g = new Float32Array(S * S);
-    for (let j = 0; j < S; j++)
-        for (let i = 0; i < S; i++) g[j * S + i] = field(lox + i, loy + j, ves);
+    const g = fieldGrid(ves, lox, loy, S);
 
     const eH = (i, j) => (j * S + i) * 2;
     const eV = (i, j) => (j * S + i) * 2 + 1;
@@ -383,6 +435,7 @@ function traceContours(ves) {
         }
         if (loop.length > 3) loops.push(loop);
     }
+    loops.grid = { g, lox, loy, S };      // 법선 계산에 재사용
     return loops;
 }
 
@@ -410,28 +463,48 @@ function resample(loop, spacing) {
     return out;
 }
 
-function buildMembrane(ves, spacing = 4) {
-    return traceContours(ves)
-        .map(l => resample(l, spacing).map(p => [p[0], p[1], normalAngle(p[0], p[1], ves)]))
+// 격자 값을 쌍선형 보간해서 법선을 구한다 (field()를 다시 부르지 않아 훨씬 빠름)
+function gridF(grid, x, y) {
+    const { g, lox, loy, S } = grid;
+    const u = clamp(x - lox, 0, S - 1.001), v = clamp(y - loy, 0, S - 1.001);
+    const i = Math.floor(u), j = Math.floor(v), fx = u - i, fy = v - j;
+    const a = g[j * S + i], b0 = g[j * S + i + 1], c = g[(j + 1) * S + i], d = g[(j + 1) * S + i + 1];
+    return (a * (1 - fx) + b0 * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+}
+function gridNormal(grid, x, y) {
+    const e = 1;
+    return Math.atan2(gridF(grid, x, y + e) - gridF(grid, x, y - e), gridF(grid, x + e, y) - gridF(grid, x - e, y));
+}
+
+// withAngle=false 이면 법선 각도를 계산하지 않는다 (곡선만 그릴 때는 각도가 필요 없다)
+function buildMembrane(ves, spacing = 4, withAngle = true) {
+    const loops = traceContours(ves), grid = loops.grid;
+    return loops
+        .map(l => resample(l, spacing).map(p => [p[0], p[1], withAngle ? gridNormal(grid, p[0], p[1]) : 0]))
         .sort((p, q) => q.length - p.length);
 }
 
 const events = [];
 
-function startEvent(type, angleDeg, dur, r, H_FAR) {
-    const e = { type, theta: rad(angleDeg), t0: performance.now(), dur, r, H_FAR };
+function startEvent(type, angleDeg, dur, r, H_FAR, maxR) {
+    const e = { type, theta: rad(angleDeg), t0: performance.now(), dur, r, H_FAR, maxR };
     events.push(e);
     return e;
 }
 
-function endocytosis(angleDeg, dur = 3500, r = RV, H_FAR = 72) { return startEvent('endo', angleDeg, dur, r, H_FAR); }
-function exocytosis(angleDeg, dur = 3500, r = RV, H_FAR = 72) { return startEvent('exo', angleDeg, dur, r, H_FAR); }
+function endocytosis(angleDeg, dur = 3500, r = RV, H_FAR = 72, maxR = 10) { return startEvent('endo', angleDeg, dur, r, H_FAR, maxR); }
+function exocytosis(angleDeg, dur = 3500, H_FAR = 72, maxR = 10) { return startEvent('exo', angleDeg, dur, 2, H_FAR, maxR); }
 function clearVesicles() { events.length = 0; }
 
 function pruneEvents(now) {
     for (let i = events.length - 1; i >= 0; i--) {
         const e = events[i];
         if (e.type === 'exo' && now >= e.t0 + e.dur) events.splice(i, 1);
+        if (e.type === 'exo' && e.r < e.maxR) {
+          const t = clamp((now - e.t0) / e.dur, 0, 1);
+          const s = smoothstep(0, 1, t) * 100;
+          e.r = pct(2, e.maxR, clamp(s * 2, 0, 100))
+        }
     }
 }
 
@@ -452,7 +525,7 @@ function drawCurve(loops) {
 function renderFrame(now) {
     pixels.fill(0);
     pruneEvents(now);
-    drawCurve(buildMembrane(buildVes(events, now), 2));
+    drawCurve(buildMembrane(buildVes(events, now), 2, false));
     ctx.putImageData(imgData, 0, 0);
     requestAnimationFrame(renderFrame);
 }
@@ -471,3 +544,4 @@ for (let i = 60; i <= 72; i += 3) {
     }
 }
 startEvent('', 20, 0, 25, 99.5);
+setTimeout(() => exocytosis(rand(100, 140), 2000, 25, 10), 500);
