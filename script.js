@@ -311,7 +311,7 @@ function eventH(e, time) {
         case '': return e.H_FAR;
         case 'exo': return pct(e.H_FAR, H_OUT, clamp((s - 50) * 2, 0, 100)) - e.r + 1;
         case 'endo': return pct(H_OUT, e.H_FAR, s);
-        case 'transV': return pct(e.H_FAR, 40, clamp((s - 50) * 2, 0, 100)) - e.r + 1;
+        case 'transV': return pct(e.H_FAR, 45, clamp((s - 25) * 2, 0, 100)) - e.r + 1;
     }
 }
 
@@ -561,9 +561,9 @@ function pruneEvents(now) {
         if (e.type === 'transV') {
             const t = clamp((now - e.t0) / e.dur, 0, 1);
             const s = smoothstep(0, 1, t) * 100;
-            if (s < 33) { e.r = pct(2, e.maxR, clamp(s * 3, 0, 100)); }
-            else if (s < 67) { e.angleDeg = pct(e.startDeg, e.destination, clamp((s - 33) * 3, 0, 100)); }
-            else { e.r = pct(e.maxR, 0, clamp((s - 67) * 3, 0, 100)); }
+            if (s < 25) { e.r = pct(2, e.maxR, clamp(s * 4, 0, 100)); }
+            else if (s < 75) { e.angleDeg = pct(e.startDeg, e.destination, clamp((s - 25) * 3, 0, 100)); }
+            else { e.r = pct(e.maxR, 0, clamp((s - 75) * 4, 0, 100)); }
         }
     }
 }
@@ -628,5 +628,5 @@ setInterval(() => {
 
 setInterval(() => {
     if (document.hidden || !document.hasFocus()) return;
-    transVesicle(rand(50, 80), 2000, 60, 5, rand(120, 130));
+    transVesicle(rand(60, 90), 2000, 60, 5, rand(105, 125));
 }, 1000);
