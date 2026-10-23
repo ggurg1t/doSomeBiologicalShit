@@ -309,9 +309,9 @@ function eventH(e, time) {
     const s = smoothstep(0, 1, t) * 100;
     switch (e.type) {
         case '': return e.H_FAR;
-        case 'exo': return pct(e.H_FAR, H_OUT, clamp((s - 50) * 2, 0, 100)) - e.r + 1;
+        case 'exo': return pct(e.H_FAR, H_OUT, clamp((s - 25) * 4 / 3, 0, 100)) - (e.r - 1);
         case 'endo': return pct(H_OUT, e.H_FAR, s);
-        case 'transV': return pct(e.H_FAR, 45, clamp((s - 25) * 2, 0, 100)) - e.r + 1;
+        case 'transV': return pct(e.H_FAR, 45, clamp((s - 25) * 1.75, 0, 100)) - e.r + 1;
     }
 }
 
@@ -548,22 +548,20 @@ function pruneEvents(now) {
     for (let i = events.length - 1; i >= 0; i--) {
         const e = events[i];
         if ((e.type === 'exo' && now >= e.t0 + e.dur) ||
-            (e.type === 'transV' && e.r == 0)
-            // || (e.type === 'transV' && e.angleDeg < rad(120) && e.H_FAR > 35)
-        ) {
+            (e.type === 'transV' && e.r == 1)) {
             events.splice(i, 1);
         }
         if (e.type === 'exo' && e.r < e.maxR) {
             const t = clamp((now - e.t0) / e.dur, 0, 1);
             const s = smoothstep(0, 1, t) * 100;
-            e.r = pct(2, e.maxR, clamp(s * 2, 0, 100))
+            e.r = pct(2, e.maxR, clamp(s * 2.5, 0, 100))
         }
         if (e.type === 'transV') {
             const t = clamp((now - e.t0) / e.dur, 0, 1);
             const s = smoothstep(0, 1, t) * 100;
             if (s < 25) { e.r = pct(2, e.maxR, clamp(s * 4, 0, 100)); }
-            else if (s < 75) { e.angleDeg = pct(e.startDeg, e.destination, clamp((s - 25) * 3, 0, 100)); }
-            else { e.r = pct(e.maxR, 0, clamp((s - 75) * 4, 0, 100)); }
+            if (s < 75) { e.angleDeg = pct(e.startDeg, e.destination, clamp(s * 4 / 3, 0, 100)); }
+            if (s >= 75) { e.r = pct(e.maxR, 1, clamp((s - 75) * 4, 0, 100)); }
         }
     }
 }
@@ -621,12 +619,20 @@ for (let i = 60; i <= 72; i += 3) {
 }
 startEvent('', 20, 0, 25, 99.5);
 
+function golgiExo() {
+    exocytosis(rand(105, 131), 2000, 22, 8);
+}
+
+function ER2golgi() {
+    transVesicle(rand(90, 100), 2000, 60, 5, rand(105, 110));
+}
+
 setInterval(() => {
     if (document.hidden || !document.hasFocus()) return;
-    exocytosis(rand(100, 136), 2000, 22, 8);
+    golgiExo();
 }, 1000);
 
 setInterval(() => {
     if (document.hidden || !document.hasFocus()) return;
-    transVesicle(rand(60, 90), 2000, 60, 5, rand(105, 125));
-}, 1000);
+    ER2golgi();
+}, 1200);
